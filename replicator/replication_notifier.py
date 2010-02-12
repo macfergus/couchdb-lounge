@@ -56,7 +56,8 @@ class BgReplicator(threading.Thread):
 		threading.Thread.__init__(self)
 
 	def run(self):
-		while True:
+		self.running = True
+		while self.running:
 			source, target, opts, tm = repq.get()
 			do = opts.get("designonly", False)
 			last = last_update.get((source, target, do), None)
@@ -71,6 +72,10 @@ class BgReplicator(threading.Thread):
 				except:
 					# don't panic!  keep going to the next record in the queue.
 					pass
+
+	def stop():
+		self.running = False
+		self.join()
 
 def do_background_replication(source, target, **opts):
 	# enqueue the request and let the consumer worry about it
@@ -127,7 +132,7 @@ def main():
 		logging.warn("Cannot write to " + LOG_PATH)
 		logging.warn("Log messages will be written to stderr instead")
 	read_conf_at = None
-	BgReplicator().start()
+	bg = BgReplicator().start()
 
 	logging.info("Starting up")
 
@@ -136,7 +141,7 @@ def main():
 				# wait for a line from the database
 				stuff = sys.stdin.readline()
 				if not stuff:
-					return
+					break
 				# format: {"type": "updated", "db": "nameofdb"}
 				notification = simplejson.loads(stuff)
 
@@ -149,9 +154,10 @@ def main():
 					replicate(db)
 			except:
 				logging.exception("error in main loop")
-				pid = os.getpid()
-				os.kill(pid, signal.SIGTERM)
-				sys.exit(0)
+				break
+
+	bg.stop()
+	sys.exit(0)
 	
 if __name__=='__main__':
 	main()
