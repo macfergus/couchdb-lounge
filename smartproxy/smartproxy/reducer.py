@@ -411,32 +411,4 @@ class ChangesReducer(Reducer):
 		if self.num_entries_remaining == 0:
 			self.reduce_deferred.callback((200, self._response_headers, cjson.encode({"results": self._results, "last_seq": cjson.encode(self._lastseq)})))
 
-
-class ChangesProxy(streaming.MultiPCP):
-	def __init__(self, consumer, since):
-		streaming.MultiPCP.__init__(self, consumer)
-		self.seq = since
-
-	def write(self, channelData):
-		channel, data = channelData
-		if not data:
-			return
-		elif 'seq' in data:
-			self.seq[channel] = data['seq']
-			data['seq'] = self.seq
-			self.consumer.write(data)
-		elif 'last_seq' in data:
-			self.finish()
-		else:
-			# don't write here!
-			# this would be an error message
-			# if we write anything, we'll automatically give a 200 code
-			# we need to fake the error response somewhere else
-			pass
-
-	def finish(self):
-		if self.consumer is not None:
-			self.consumer.write({'last_seq': self.seq})
-		streaming.MultiPCP.finish(self)
-
 # vi: noexpandtab ts=2 sts=2 sw=2

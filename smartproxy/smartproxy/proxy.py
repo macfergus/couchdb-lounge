@@ -41,6 +41,7 @@ from fetcher import HttpFetcher, MapResultFetcher, DbFetcher, DbGetter, ViewFetc
 
 from reducer import ReduceQueue, ReducerProcessProtocol, Reducer, AllDocsReducer, ChangesReducer
 
+import changes
 import streaming
 import reducer
 
@@ -344,21 +345,27 @@ class SmartproxyResource(resource.Resource):
 		
 		return server.NOT_DONE_YET
 
-	def render_continuous_changes(self, request, database):
+	def render_changes(self, request):
+		database = request.path[1:].split('/', 1)[0]
 		shards = self.conf_data.shards(database)
 		rep_lists = self.conf_data.shardmap
 
+		feed = request.args.get('feed',['nofeed'])[-1]
+		continuous = (feed == 'continuous')
+
 		since = None
 		if 'since' in request.args:
-			since = cjson.decode(zlib.decompress(base64.urlsafe_b64decode(request.args['since'][-1])))
-			if True in itertools.imap(lambda s, rl: str(s) not in since # missing shard
-						  or False not in
-						  itertools.imap(lambda r:
-								 str(r) not in since[str(s)],
-								 rl), # no recognized replicas
-					      itertools.count(), rep_lists):
+			since = changes.decode_seq(request.args['since'][-1])
+			if True in itertools.imap(
+				lambda s, rl: str(s) not in since # missing shard
+				or False not in	itertools.imap(lambda r:
+					str(r) not in since[str(s)],
+					rl), # no recognized replicas
+				itertools.count(), rep_lists):
 				request.setResponseCode(http.BAD_REQUEST)
-				return '{"error":"bad request","reason":"missing shard or no known replicas in since"}'
+				request.write('{"error":"bad request",' +
+							  '"reason":' +
+							  '"missing shard or bad replicas in since"}')
 			del request.args['since']
 		else:
 			since = dict(map(lambda n: (str(n),
@@ -366,7 +373,7 @@ class SmartproxyResource(resource.Resource):
 					 xrange(len(shards))))
 
 		heartbeat = None
-		if 'heartbeat' in request.args:
+		if 'heartbeat' in request.args and continuous:
 			heartbeat = task.LoopingCall(lambda: request.write('\n'))
 			if request.args['heartbeat'][-1] == 'true':
 				heartbeat.start(60) # default 1 bpm
@@ -376,48 +383,40 @@ class SmartproxyResource(resource.Resource):
 			
 		kwargs = {'headers': request.getAllHeaders()}
 
-		def output_transformation(line):
-			if not line:
-				return ''
-			if 'seq' in line:
-				line['seq'] = base64.urlsafe_b64encode(
-					zlib.compress(cjson.encode(line['seq']), 1))
-			elif 'last_seq' in line:
-				line['last_seq'] = base64.urlsafe_b64encode(
-					zlib.compress(cjson.encode(line['last_seq']), 1))
-			return cjson.encode(line) + '\n'
-
-		def input_transformation(line):
-			return cjson.decode(line)
-
-		json_output = streaming.LinePCP(request, xform = output_transformation)
-		shard_proxy = reducer.ChangesProxy(json_output, since)
+		input_xform, output_xform = changes.transformations(continuous)
+		json_output = streaming.LinePCP(request, xform = output_xform)
+		shard_proxy = changes.ChangesProxy(json_output, since)
 
 		deferred_shards = []
 
-		def finish_firehose(reason):
-			reason, shard_id = reason # packed by deferred list
-			reason, ch_idx = reason # packed by deferred list
-			reason, factory, rep_id = reason # packed by getPageFromAll
-			if heartbeat:
-				heartbeat.stop()
-			# stop the remaining channels
-			shard_proxy.stopProducing()
+		def cleanup_changes(reason):
+			try:
+				reason.trap(error.Error) # trap http error
+				request.setResponseCode(int(reason.value.status))
+				if reason.value.status == '404':
+					request.write('{"error": "not_found", "reason": "no_db_file"}')
+					request.write('\n')
+				else:
+					request.write('{"error": "unknown"}') # good enough
+					request.write('\n')
+					reason.raiseException()
+			except:
+				# otherwise clean closure
+				shard_proxy.finish() # writes last_seq
+
+
+		def finish_changes(results):
 			# wrap try/finally for python 2.4 compatibility
 			try:
-				try:
-					reason.trap(error.Error) # trap http error
-					request.setResponseCode(int(reason.value.status))
-					if reason.value.status == '404':
-						request.write('{"error": "not_found", "reason": "no_db_file"}')
-						request.write('\n')
-					else:
-						request.write('{"error": "unknown"}') # good enough
-						request.write('\n')
-						reason.raiseException()
-				except:
-					# otherwise clean closure
-					shard_proxy.finish() # writes last_seq
+				if continuous:
+					reason, shard_id = results # packed by deferred list
+					reason, ch_idx = reason # packed by deferred list
+					reason, factory, rep_id = reason # packed by getPageFromAll
+					if heartbeat:
+						heartbeat.stop()
+					# stop the remaining channels
+					shard_proxy.stopProducing()
+					cleanup_changes(reason)
 			finally:
 				json_output.finish()
 				request.unregisterProducer()
@@ -432,11 +431,11 @@ class SmartproxyResource(resource.Resource):
 					yield ("http://%s:%d/%s/_changes?since=%s&%s" %
 					       (host, port, shards[int(shard_id)], seq, qs))
 			shard_channel = shard_proxy.createChannel(shard_id)
-			rep_proxy = reducer.ChangesProxy(shard_channel,
+			rep_proxy = changes.ChangesProxy(shard_channel,
 							 since[shard_id])
 
 			channels = (streaming.LinePCP(rep_proxy.createChannel(rep),
-						      xform = input_transformation)
+						      xform = input_xform)
 				    for rep in rep_since.iterkeys())
 
 			deferred_reps = getPageFromAll(
@@ -454,60 +453,12 @@ class SmartproxyResource(resource.Resource):
 				consumeErrors=1)
 			deferred_shards.append(deferred_reps_list)
 
+		failfast = continuous and 1 or 0
 		deferred = defer.DeferredList(deferred_shards,
-					      fireOnOneErrback=1,
-					      fireOnOneCallback=1,
+					      fireOnOneErrback=failfast,
+					      fireOnOneCallback=failfast,
 					      consumeErrors=1)
-		deferred.addBoth(finish_firehose)
-		return server.NOT_DONE_YET
-	
-	def render_changes(self, request):
-		database, changes = request.path[1:].split('/', 1)
-
-		if 'continuous' in request.args.get('feed',['nofeed']):
-			return self.render_continuous_changes(request, database)
-
-		deferred = defer.Deferred()
-
-		def send_output(params):
-			code, headers, doc = params
-			for k in headers:
-				if len(headers[k])>0:
-					request.setHeader(normalize_header(k), headers[k][0])
-			request.setResponseCode(code)
-			request.write(doc + '\n')
-			request.finish()
-		deferred.addCallback(send_output)
-
-		def handle_error(s):
-			# if we get back some non-http response type error, we should
-			# return 500
-			if hasattr(s.value, 'status'):
-				status = int(s.value.status)
-			else:
-				status = 500
-			if hasattr(s.value, 'response'):
-				response = s.value.response
-			else:
-				response = '{}'
-			request.setResponseCode(status)
-			request.write(response+"\n") 
-			request.finish()
-		deferred.addErrback(handle_error)
-
-		shards = self.conf_data.shards(database)
-		seq = cjson.decode(request.args.get('since', [cjson.encode([0 for shard in shards])])[-1])
-		reducer = ChangesReducer(seq, deferred)
-		for shard,shard_seq in zip(shards, seq):
-			nodes = self.conf_data.nodes(shard)
-			shard_args = copy.deepcopy(request.args)
-			shard_args['since'] = [shard_seq]
-
-			qs = urllib.urlencode([(k,v) for k in shard_args for v in shard_args[k]])
-			urls = [node + "/_changes?" + qs for node in nodes]
-			fetcher = ChangesFetcher(shard, urls, reducer, deferred, self.client_queue)
-			fetcher.fetch(request)
-
+		deferred.addBoth(finish_changes)
 		return server.NOT_DONE_YET
 	
 	def render_all_docs(self, request):
