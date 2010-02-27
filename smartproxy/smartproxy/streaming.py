@@ -177,7 +177,9 @@ class LinePCP(pcp.BasicProducerConsumerProxy):
 		self.xform = xform
 
 	def write(self, data):
-		pcp.BasicProducerConsumerProxy.write(self, self.xform(data))
+		result = self.xform(data)
+		if result:
+			pcp.BasicProducerConsumerProxy.write(self, result)
 
 	def finish(self):
 		if self.consumer is not None:
