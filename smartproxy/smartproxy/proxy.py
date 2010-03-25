@@ -206,7 +206,7 @@ class SmartproxyResource(resource.Resource):
 
 			nodes = self.conf_data.nodes(shard)
 			urls = ['/'.join([node, req]) for node in nodes]
-			fetcher = MapResultFetcher(shard, urls, reducer, deferred, self.client_queue)
+			fetcher = MapResultFetcher(shard, urls, reducer, deferred, self.client_queue, body=raw_body)
 			fetcher.fetch(request)
 
 		return server.NOT_DONE_YET
