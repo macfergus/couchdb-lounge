@@ -53,7 +53,7 @@ def getPageFromAny(upstreams, factory=client.HTTPClientFactory,
 	def subgen():
 		lastError = None
 		for (identifier, url, args, kwargs) in upstreams:
-			subfactory = client._makeGetterFactory(url,
+			subfactory = client._makeGetterFactory(str(url),
 							       factory,
 							       context_factory,
 							       *args, **kwargs)
@@ -71,7 +71,7 @@ def getPageFromAll(upstreams, factory=client.HTTPClientFactory,
 		   context_factory=None):
 	def makeUpstreamGetter(upstream):
 		identifier, url, args, kwargs = upstream
-		subfactory = client._makeGetterFactory(url,
+		subfactory = client._makeGetterFactory(str(url),
 						       factory,
 						       context_factory,
 						       *args, **kwargs)
