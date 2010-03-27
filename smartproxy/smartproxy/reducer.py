@@ -300,7 +300,6 @@ class Reducer:
 		self._response = {"total_rows": 0, "offset": 0}
 
 	def process_map(self, data, shard=None, headers={}, code=None):
-		log.msg("process_map %s" % data)
 		if code is not None:
 			self.coderecvd = code
 		if shard is not None:
@@ -312,7 +311,6 @@ class Reducer:
 
 		#TODO: check to make sure this doesn't go less than 0
 		self.num_entries_remaining -= 1
-		log.msg("num_entries_remaining %d" % self.num_entries_remaining)
 		try:
 			results = cjson.decode(data)
 		except:
@@ -327,7 +325,6 @@ class Reducer:
 			self._reduce_all(self._results)
 
 	def _reduce_all(self, streams):
-		log.msg("reducer._reduce_all %s" % str(streams))
 		min_fn = json_min
 		if self.descending:
 			min_fn = json_max
@@ -335,10 +332,8 @@ class Reducer:
 		result = []
 		streams = [q for q in streams if q['rows']]
 		while streams:
-			log.msg("top streams are '%s'" % streams)
 			bucket = []
 			cur = min_fn([q['rows'][0]['key'] for q in streams])
-			log.msg("cur is %s" % cur)
 			for q in streams:
 				while q['rows'] and q['rows'][0]['key']==cur:
 					bucket.append(q['rows'].pop(0))
@@ -353,7 +348,6 @@ class Reducer:
 				# ["rereduce",["function(k, v, r) { return sum(v); }"],[33,55,66]]
 				return cjson.encode(("rereduce", [self.reduce_func], [row["value"] for row in rows]))
 			lines = [format_line(rows) for k, rows in result]
-			log.msg("sending to reducer: ***%s***" % lines)
 			self.reduce_queue.enqueue(keys, lines, self._reduce_all_done)
 		else:
 			log.msg("no reduce function")
@@ -445,7 +439,6 @@ class ChangesReducer(Reducer):
 
 	def process_map(self, data, shard, headers):
 		#TODO: check to make sure this doesn't go less than 0
-		log.msg("Got headers: %s" % str(headers))
 		if not self._response_headers:
 			self._response_headers = copy.copy(headers)
 		self.num_entries_remaining -= 1

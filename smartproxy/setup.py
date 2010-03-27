@@ -17,10 +17,10 @@ data_files = [init_files, conf_files, check_files, cron_files, cache_files]
 
 py_modules = ["smartproxy.proxy", "smartproxy.fetcher", "smartproxy.reducer", "smartproxy.streaming", "smartproxy.changes"]
 
-setup( version = '1.3.0',
+setup( version = '1.3.1kevin2',
 	   name = 'lounge-smartproxy',
 	   author='meebo',
 	   author_email='shaun@meebo-inc.com',
-	   url='http://tilgovi.gthhub.com/couchdb-lounge',
+	   url='http://tilgovi.github.com/couchdb-lounge',
 	   data_files = data_files,
 	   py_modules = py_modules)
